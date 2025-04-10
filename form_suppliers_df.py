@@ -88,15 +88,17 @@ def select_test_tenders(data: pd.DataFrame, num_tenders: int = 5) -> List[pd.Dat
     for tender_id in all_tender_ids:
         tender_data = data[data['Реестровый номер публикации'] == tender_id]
         participants = tender_data['ИНН поставщика'].unique()
-        if all(inn in all_known_suppliers for inn in participants):
-            winner_data = tender_data[tender_data['Победитель'] == 1]
-            if not winner_data.empty:
-                winner_inn = winner_data['ИНН поставщика'].iloc[0]
-                valid_tenders.append({
-                    'tender_id': tender_id,
-                    'participants_count': len(participants),
-                    'winner_inn': winner_inn
-                })
+        num_participants = len(participants)
+        if num_participants > 1:
+            if all(inn in all_known_suppliers for inn in participants):
+                winner_data = tender_data[tender_data['Победитель'] == 1]
+                if not winner_data.empty:
+                    winner_inn = winner_data['ИНН поставщика'].iloc[0]
+                    valid_tenders.append({
+                        'tender_id': tender_id,
+                        'participants_count': num_participants,
+                        'winner_inn': winner_inn
+                    })
         processed_count += 1
 
 
