@@ -2,6 +2,28 @@ import pandas as pd
 import numpy as np
 from sklearn.impute import KNNImputer
 from typing import List 
+from sklearn.experimental import enable_iterative_imputer
+from sklearn.impute import IterativeImputer
+from sklearn.ensemble import RandomForestRegressor
+
+
+def hierarchical_median_impute(df, columns_to_fill, group_hierarchy):
+    for col in columns_to_fill:
+        is_null = df[col].isnull()
+        for groups in group_hierarchy:
+            if len(groups) == 0:
+                global_median = df[col].median()
+                df.loc[is_null, col] = global_median
+                break
+            medians = df.groupby(groups)[col].transform('median')
+            df.loc[is_null, col] = df.loc[is_null, col].fillna(medians)
+            is_null = df[col].isnull()
+            if not is_null.any():
+                break
+    return df
+
+
+group_hierarchy = [['Сфера деятельности', 'Регион поставки'],['Сфера деятельности'],['Регион поставки'],[]]
 
 def preprocess_tender_data(data: pd.DataFrame) -> pd.DataFrame:
     """
@@ -43,6 +65,13 @@ def preprocess_tender_data(data: pd.DataFrame) -> pd.DataFrame:
             1, 0
         )
 
+    if 'Сводный риск' in df.columns:
+        df.loc[df['Сводный риск'] == 'Высокий риск', 'Сводный риск'] = 3
+        df.loc[df['Сводный риск'] == 'Средний риск', 'Сводный риск'] = 2
+        df.loc[df['Сводный риск'] == 'Низкий риск', 'Сводный риск'] = 1
+        df.loc[(df['Сводный риск'] == 'Риск не определен') | (df['Сводный риск'] == 'Недействующий'), 'Сводный риск'] = 0
+        df['Сводный риск'] = df['Сводный риск'].fillna(0)
+
     if "Статус допуска" in df.columns:
         df["Статус допуска"] = np.where(df["Статус допуска"] == "Допущен", 1, 0)
 
@@ -54,27 +83,9 @@ def preprocess_tender_data(data: pd.DataFrame) -> pd.DataFrame:
         df = df[df['Сфера деятельности'].notna()]
         print(f"  Удалено строк с отсутствующей Сферой деятельности: {initial_rows - df.shape[0]}")
 
-    if 'Стоимость(руб.) Заказчик' in df.columns and \
-       'ИНН заказчика' in df.columns and \
-       'Сфера деятельности' in df.columns and \
-       'Регион поставки' in df.columns:
-
-        sphere_company_median = df.groupby(['ИНН заказчика', 'Сфера деятельности'])['Стоимость(руб.) Заказчик'].transform('median')
-        company_median = df.groupby('ИНН заказчика')['Стоимость(руб.) Заказчик'].transform('median')
-        sphere_median = df.groupby('Сфера деятельности')['Стоимость(руб.) Заказчик'].transform('median')
-        region_median = df.groupby('Регион поставки')['Стоимость(руб.) Заказчик'].transform('median')
-        global_median = df['Стоимость(руб.) Заказчик'].median()
-
-        df['Стоимость(руб.) Заказчик'] = df['Стоимость(руб.) Заказчик'].fillna(
-            sphere_company_median.fillna(
-                company_median.fillna(
-                    sphere_median.fillna(
-                        region_median.fillna(global_median)
-                    )
-                )
-            )
-        )
-        print(f"Заполнено пропусков в 'Стоимость(руб.) Заказчик': {df['Стоимость(руб.) Заказчик'].isna().sum()} (должно быть 0)") 
+    if 'Стоимость(руб.) Заказчик' in df.columns and 'Выручка' in df.columns:
+        imputer = IterativeImputer(estimator=RandomForestRegressor(n_estimators=100, random_state=42, bootstrap=True), max_iter=10)
+        df[['Стоимость(руб.) Заказчик', 'Выручка']] = imputer.fit_transform(df[['Стоимость(руб.) Заказчик', 'Выручка']])
 
     if 'Дата публикации' in df.columns:
         df['Дата публикации'] = pd.to_datetime(df['Дата публикации'])
@@ -82,7 +93,7 @@ def preprocess_tender_data(data: pd.DataFrame) -> pd.DataFrame:
         df['month'] = df['Дата публикации'].dt.month
 
     if 'year' in df.columns and 'Победитель' in df.columns and 'ИНН поставщика' in df.columns:
-        train_data = df[df['year'].isin(range(2019, 2024))] 
+        train_data = df[df['year'].isin(range(2019, 2024))].copy()
         print(f"Размер 'train_data' для расчета статистики: {train_data.shape[0]} строк")
         df['win_rate'] = train_data.groupby(['ИНН поставщика'])['Победитель'].transform(lambda x: (x == 1).sum() / len(x) if len(x) > 0 else 0)
 
@@ -109,11 +120,6 @@ def preprocess_tender_data(data: pd.DataFrame) -> pd.DataFrame:
 
         if 'Дата публикации' in df.columns:
              df["last_activity_date"] = train_data.groupby("ИНН поставщика")["Дата публикации"].transform("max")
-             fixed_today = pd.to_datetime('2025-04-10') 
-             print(f"  Используется фиксированная дата для recent_activity_ratio: {fixed_today.date()}")
-             df['recent_activity_ratio'] = train_data.groupby('ИНН поставщика')['Дата публикации'].transform(
-                 lambda x: (x > fixed_today - pd.Timedelta(days=1825)).sum() / len(x) if len(x) > 0 else 0
-             )
  
         if 'Реестровый номер публикации' in df.columns:
             df['competitors_per_tender'] = df.groupby('Реестровый номер публикации')['ИНН поставщика'].transform('nunique')
@@ -139,25 +145,29 @@ def preprocess_tender_data(data: pd.DataFrame) -> pd.DataFrame:
     df = df.drop(columns=[col for col in cols_to_drop_intermediate if col in df.columns], errors='ignore')
 
 
-    columns_to_impute = [
-        'win_rate', 'region_wins', 'region_win_rate',
-        'customer_wins', 'customer_win_rate', 'sphere_wins',
-        'sphere_win_rate', 'total_wins', 'avg_price_drop',
-        'recent_activity_ratio', 'competitors_per_tender',
-        'avg_competitors_in_region', 'avg_competitors_in_sphere',
-        'avg_competitors_in_customer', 'customer_loyalty'
-    ]
+    columns_to_impute = ['win_rate', 'region_win_rate',
+    'customer_win_rate', 'sphere_win_rate', 'avg_price_drop']
     existing_columns_to_impute = [col for col in columns_to_impute if col in df.columns]
 
     if existing_columns_to_impute:
         print(f"Колонки для KNNImputer: {existing_columns_to_impute}")
-        imputer = KNNImputer(n_neighbors=5)
+        imputer = KNNImputer(n_neighbors=11)
         df[existing_columns_to_impute] = imputer.fit_transform(df[existing_columns_to_impute])
     else:
         print("Нет колонок для заполнения с помощью KNNImputer")
 
+    median_columns = ['region_wins',
+    'customer_wins', 'sphere_wins', 'total_wins', 'competitors_per_tender',
+    'avg_competitors_in_region', 'avg_competitors_in_sphere',
+    'avg_competitors_in_customer']
+
+    df = hierarchical_median_impute(df, median_columns, group_hierarchy)
+
     if 'month' in df.columns:
         df['is_january'] = df['month'].apply(lambda x: 1 if x == 1 else 0)
+
+    if 'year' in df.columns:
+        df['is_2020'] = df['year'].apply(lambda x: 1 if x == 2020 else 0)
 
     date_end_col = 'Дата окончания приема заявок / Дата планового окончания исполнения контракта / Плановая дата публикации лота по ППГ'
     date_start_col = 'Дата начала подачи заявок / Дата начала исполнения контракта / Дата публикации ППГ'
@@ -177,5 +187,8 @@ def preprocess_tender_data(data: pd.DataFrame) -> pd.DataFrame:
         df['app_start_night_12'] = (df[date_start_col].dt.hour == 0).astype(int)
     if date_trade_end_col in df.columns:
         df['trade_end_night_12'] = (df[date_trade_end_col].dt.hour == 0).astype(int)
+
+    df['log_profit'] = np.log1p(df['Выручка'])
+    df['log_cost'] = np.log1p(df['Стоимость(руб.) Заказчик'])
 
     return df
