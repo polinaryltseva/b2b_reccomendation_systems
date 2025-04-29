@@ -619,13 +619,6 @@ def evaluate_recommendations(df, model, num_tenders=100, k_values=[1, 3, 5, 10, 
     valid_tenders = winner_counts[winner_counts > 0].index.tolist()
     print(f"\nНайдено {len(valid_tenders)} тендеров с победителями")
     
-    if len(valid_tenders) == 0:
-        print(f"Ошибка: В данных нет тендеров с победителями.")
-        return {
-            'error': 'Нет тендеров с победителями',
-            'num_evaluated_tenders': 0
-        }
-    
     filtered_df = df[df[tender_id_column].isin(valid_tenders)].copy()
     unique_tenders = filtered_df.drop_duplicates(subset=[tender_id_column])
     
@@ -856,12 +849,13 @@ def evaluate_recommendations(df, model, num_tenders=100, k_values=[1, 3, 5, 10, 
 
 
 
+
 def visualize_evaluation_results(results, title="Оценка качества рекомендаций"):
     """
     Визуализирует результаты оценки рекомендаций с помощью графиков
     """
 
-    fig, axes = plt.subplots(2, 2, figsize=(15, 10))
+    fig, axes = plt.subplots(1, 2, figsize=(15, 5))
     fig.suptitle(title, fontsize=16)
     
     has_metrics = results.get('successful_tenders', 0) > 0
@@ -869,7 +863,7 @@ def visualize_evaluation_results(results, title="Оценка качества �
     
     k_values = [1, 3, 5, 10, 20]
     
-    ax1 = axes[0, 0]
+    ax1 = axes[0]
     if has_metrics:
         precision_values = [results.get(f'precision@{k}', 0) for k in k_values]
         recall_values = [results.get(f'recall@{k}', 0) for k in k_values]
@@ -900,7 +894,7 @@ def visualize_evaluation_results(results, title="Оценка качества �
         ax1.text(0.5, 0.5, 'Нет данных для отображения', ha='center', va='center', fontsize=12)
         ax1.axis('off')
     
-    ax2 = axes[0, 1]
+    ax2 = axes[1]
     if has_metrics:
         ndcg_values = [results.get(f'ndcg@{k}', 0) for k in k_values]
         ax2.plot(k_values, ndcg_values, 'o-', color='purple', linewidth=2, markersize=8)
@@ -918,51 +912,9 @@ def visualize_evaluation_results(results, title="Оценка качества �
         ax2.text(0.5, 0.5, 'Нет данных для отображения', ha='center', va='center', fontsize=12)
         ax2.axis('off')
     
-    ax3 = axes[1, 0]
-    processed = results.get('processed_tenders', 0)
-    skipped = results.get('skipped_tenders', 0)
-    successful = results.get('successful_tenders', 0)
-    
-    if processed > 0:
-        labels = ['Успешно оценено', 'Пропущено']
-        sizes = [successful, skipped]
-        colors = ['#66b3ff', '#ff9999']
-        
-        ax3.pie(sizes, labels=labels, colors=colors, autopct='%1.1f%%', 
-                shadow=True, startangle=90)
-        ax3.axis('equal')
-        ax3.set_title('Статистика обработки тендеров')
-    else:
-        ax3.text(0.5, 0.5, 'Нет данных для отображения', ha='center', va='center', fontsize=12)
-        ax3.axis('off')
-    
-    ax4 = axes[1, 1]
-    ax4.axis('off')
-    
-    info_text = f"Количество оцененных тендеров: {successful}\n\n"
-    
-    if has_metrics:
-        roc_auc = results.get('roc_auc')
-        ap = results.get('average_precision')
-        if roc_auc is not None:
-            info_text += f"ROC AUC: {roc_auc:.4f}\n"
-        if ap is not None:
-            info_text += f"Average Precision: {ap:.4f}\n"
-    
-    if skipped > 0:
-        skip_rate = skipped / processed * 100
-        if skip_rate > 50:
-            info_text += f"\nВнимание: {skip_rate:.1f}% тендеров пропущено\n"
-            info_text += "Рекомендации:\n"
-            info_text += "1. Проверьте качество данных\n"
-            info_text += "2. Уменьшите мин. кол-во кандидатов\n"
-            info_text += "3. Расширьте критерии отбора"
-    
-    ax4.text(0.5, 0.5, info_text, ha='center', va='center', fontsize=12)
-    ax4.set_title('Глобальные метрики')
-    
     plt.tight_layout(rect=[0, 0, 1, 0.95])
     return fig
+
 
 
 def print_evaluation_results(results):
@@ -970,12 +922,7 @@ def print_evaluation_results(results):
     Выводит результаты оценки рекомендаций в отформатированном виде
 
     """
-    
-    print("\n=== Статистика обработки тендеров ===")
-    print(f"Всего обработано: {results['processed_tenders']}")
-    print(f"Успешно оценено: {results['successful_tenders']}")
-    print(f"Пропущено: {results['skipped_tenders']}")
-    
+
     if results['successful_tenders'] > 0:
         print("\n=== Метрики качества ===")
         
@@ -995,6 +942,4 @@ def print_evaluation_results(results):
         if 'mean_recall' in results:
             print(f"Mean Recall: {results['mean_recall']:.4f} ± {results['mean_recall_std']:.4f}")
     
-    print("\n=== Дополнительная информация ===")
-    print(f"Процент успешно обработанных тендеров: {(results['successful_tenders'] / results['processed_tenders'] * 100):.1f}%")
-    
+  
