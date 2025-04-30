@@ -4,7 +4,7 @@ import random
 from typing import List, Dict, Any, Set
 
 def form_suppliers_df(data: pd.DataFrame) -> pd.DataFrame:
-    new_data = data[data['Дата публикации'].dt.year < 2024].copy()
+    new_data = data.copy()
     new_data['is_winner'] = (new_data['Победитель'] == 'Победитель').astype(int)
 
     new_data = new_data.sort_values(by=['ИНН поставщика', 'Дата публикации'], ascending=[True, True])
@@ -17,20 +17,22 @@ def form_suppliers_df(data: pd.DataFrame) -> pd.DataFrame:
     'avg_tender_value_hist': ('Стоимость(руб.) Заказчик', 'mean'), 
     'regions_set': ('Регион поставки', lambda x: set(x.dropna())),
     'spheres_set': ('Сфера деятельности', lambda x: set(x.dropna())),
-    'win_rate': ('win_rate', 'last'),
+    'win_rate': ('win_rate', 'mean'),
     'region_wins': ('region_wins', 'last'),
-    'region_win_rate': ('region_win_rate', 'last'),
+    'region_win_rate': ('region_win_rate', 'mean'),
     'customer_wins': ('customer_wins', 'last'),
-    'customer_win_rate': ('customer_win_rate', 'last'),
+    'customer_win_rate': ('customer_win_rate', 'mean'),
     'sphere_wins': ('sphere_wins', 'last'),
-    'sphere_win_rate': ('sphere_win_rate', 'last'),
+    'sphere_win_rate': ('sphere_win_rate', 'mean'),
     'total_wins': ('total_wins', 'last'),
-    'recent_activity_ratio': ('recent_activity_ratio', 'last'),
-    'competitors_per_tender': ('competitors_per_tender', 'last'), 
-    'avg_competitors_in_region': ('avg_competitors_in_region', 'last'),
-    'avg_competitors_in_sphere': ('avg_competitors_in_sphere', 'last'),
-    'avg_competitors_in_customer': ('avg_competitors_in_customer', 'last'),
-    'РНП ранее': ('РНП ранее', 'last') 
+    'competitors_per_tender': ('competitors_per_tender', 'mean'), 
+    'avg_competitors_in_region': ('avg_competitors_in_region', 'mean'),
+    'avg_competitors_in_sphere': ('avg_competitors_in_sphere', 'mean'),
+    'avg_competitors_in_customer': ('avg_competitors_in_customer', 'mean'),
+    'РНП ранее': ('РНП ранее', 'last'),
+    'Сводный риск': ('Сводный риск', 'last'),
+    'log_profit': ('log_profit', 'last'),
+    'Уровень': ('Уровень', 'last')
     }
 
     supplier_historical_data = new_data.groupby('ИНН поставщика').agg(**aggregations).reset_index()
@@ -63,15 +65,15 @@ def filter_suppliers(suppliers_df, tender_info_df):
     print(f"Получено {filtered_suppliers.shape[0]} поставщиков по региону '{tender_region}' и сфере '{tender_sphere}'")
     return filtered_suppliers
 
-def select_test_tenders(data: pd.DataFrame, num_tenders: int = 5) -> List[pd.DataFrame]:
+def select_test_tenders(data, num_tenders: int = 5) -> List[pd.DataFrame]:
     """
     Выбирает несколько валидных тендеров для тестирования (все участники которого присутствуют
     в наборе данных - обучающей выборке)
     """
-    all_known_suppliers: Set[str] = set(data['ИНН поставщика'].unique())
+    all_known_suppliers = set(data['ИНН поставщика'].unique())
     print(f"{len(all_known_suppliers)} уникальных поставщиков в данных")
 
-    def get_supplier_stats(inn: str) -> Dict[str, int]:
+    def get_supplier_stats(inn):
         supplier_records = data[data['ИНН поставщика'] == inn]
         wins = 0
         if 'Победитель' in supplier_records.columns:
@@ -81,7 +83,7 @@ def select_test_tenders(data: pd.DataFrame, num_tenders: int = 5) -> List[pd.Dat
             'wins_count': wins
         }
 
-    valid_tenders: List[Dict[str, Any]] = []
+    valid_tenders = []
     all_tender_ids = data['Реестровый номер публикации'].unique()
 
     processed_count = 0
@@ -103,7 +105,7 @@ def select_test_tenders(data: pd.DataFrame, num_tenders: int = 5) -> List[pd.Dat
 
 
     print(f"\nНайдено {len(valid_tenders)} валидных тендеров.")
-    selected_tenders_data: List[pd.DataFrame] = []
+    selected_tenders_data = []
     if valid_tenders:
         n_select = min(num_tenders, len(valid_tenders))
         selected_sample = random.sample(valid_tenders, n_select)
@@ -161,6 +163,13 @@ def format_tender_info_dict(tender_df: pd.DataFrame) -> Dict[str, Any]:
             'app_start_night_12': first_row['app_start_night_12'], 
             'trade_end_night_12': first_row['trade_end_night_12'],
             'year': first_row['year'],
-            'month': first_row['month']
+            'month': first_row['month'],
+            'is_2019': first_row['is_2019'],
+            'is_jan_to_april': first_row['is_jan_to_april'],
+            'log_cost': first_row['log_cost'],
+            'Обеспечение заявки (руб.)': first_row['Обеспечение заявки (руб.)'],
+            'Обеспечение заявки, %': first_row['Обеспечение заявки, %'],
+            'Обеспечение контракта (руб.)': first_row['Обеспечение контракта (руб.)'],
+            'Обеспечение контракта, %': first_row['Обеспечение контракта, %'],
         }
     return tender_info_dict
