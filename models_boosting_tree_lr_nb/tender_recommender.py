@@ -230,86 +230,70 @@ def get_model_components(model):
     return pipeline, preprocessor, classifier
 
 
-def get_recommendations(tender_data, df, model, top_n=20):
+def get_recommendations(tender_data=None, df=None, model=None, top_n=20, tender_id=None):
     """
     Получение рекомендаций поставщиков для тендера
     """
-    tender_df = pd.DataFrame([tender_data])
-    
-    relevant_columns = ['ИНН поставщика', 'Поставщик', 'Регион поставки',
-                       'Сфера деятельности', 'Город поставщика', 'Субъект поставщика',
-                       'Допущен']
-    
-    unique_suppliers = df[relevant_columns].drop_duplicates()
-    print(f"\nНайдено {len(unique_suppliers)} уникальных поставщиков в базе")
+    if tender_id is not None:
+        tender_rows = df[df['Реестровый номер публикации'] == tender_id]
+        if len(tender_rows) == 0:
+            print(f"Тендер с реестровым номером '{tender_id}' не найден")
+            return []
+        
+        sample_tender_row = tender_rows.iloc[0]
+        tender_data = {
+            'Сфера деятельности': sample_tender_row['Сфера деятельности'],
+            'Регион поставки': sample_tender_row['Регион поставки'],
+            'Уровень': sample_tender_row['Уровень'],
+            'Заказчик': sample_tender_row.get('Заказчик'),
+            'ИНН заказчика': sample_tender_row.get('ИНН заказчика'),
+            'Реестровый номер публикации': tender_id
+        }
+
+        print(f"Сфера деятельности: {tender_data['Сфера деятельности']}")
+        print(f"Регион поставки: {tender_data['Регион поставки']}")
     
     pipeline, preprocessor, classifier = get_model_components(model)
+    print(f"Тип модели: {type(classifier)}")
     
-    if hasattr(classifier, 'n_features_in_'):
-        print(f"Классификатор ожидает точно {classifier.n_features_in_} признаков")
+    supplier_id_column = 'ИНН поставщика'
     
-    competitor_counts = df.groupby('Реестровый номер публикации')['ИНН поставщика'].nunique()
-    competitors_df = df.groupby('Реестровый номер публикации').apply(
-        lambda x: pd.Series({
-            'tender_id': x['Реестровый номер публикации'].iloc[0],
-            'competitors_count': len(x) - 1
-        })
-    ).reset_index(drop=True)
+    company_columns = [col for col in [supplier_id_column, 'Поставщик', 'Регион поставки', 
+                                     'Сфера деятельности', 'Субъект поставщика', 'Адрес'] 
+                      if col in df.columns]
     
-    print(f"\nРасчет количества конкурентов в тендере:")
-    print(f"Всего уникальных тендеров: {len(competitor_counts)}")
-    print(f"Среднее количество конкурентов в тендере: {competitor_counts.mean()-1:.2f}")
-    print(f"Максимальное количество конкурентов: {competitor_counts.max()-1}")
+    companies_db = df[company_columns].drop_duplicates()
+    print(f"\nВсего уникальных компаний в базе: {len(companies_db)}")
     
-    competitor_distribution = (competitor_counts-1).value_counts().sort_index()
-    print("\nРаспределение количества конкурентов в тендерах:")
-    for count, freq in competitor_distribution.items():
-        print(f"  {count} конкурентов: {freq} тендеров")
-
-    calculated_features = []
+    candidates = get_candidate_companies(tender_data, companies_db, df)
+    print(f"Отобрано {len(candidates)} кандидатов для тендера")
     
-    customer_inn = tender_data.get('ИНН заказчика')
-    customer_name = tender_data.get('Заказчик')
+    if len(candidates) == 0:
+        print("Не найдено подходящих кандидатов для тендера")
+        return []
     
-    for idx, supplier in unique_suppliers.iterrows():
-        supplier_data_enriched = supplier.copy()
-        
-        if customer_inn is not None:
-            supplier_data_enriched['ИНН заказчика'] = customer_inn
-        if customer_name is not None:
-            supplier_data_enriched['Заказчик'] = customer_name
-        
-        company_features = calculate_company_features(supplier_data_enriched, df)
-        
-        supplier_data = {
-            'idx': idx,
-            'ИНН поставщика': supplier['ИНН поставщика'],
-            'Поставщик': supplier['Поставщик']
-        }
-        supplier_data.update(company_features)
-        
-        supplier_tenders = df[df['ИНН поставщика'] == supplier['ИНН поставщика']]['Реестровый номер публикации'].unique()
-        if len(supplier_tenders) > 0 and not competitors_df.empty:
-            relevant_competitors = competitors_df[competitors_df['tender_id'].isin(supplier_tenders)]
-            if not relevant_competitors.empty:
-                avg_competitors = relevant_competitors['competitors_count'].mean()
-                supplier_data['Кол-во конкурентов в тендере'] = avg_competitors
-        
-        calculated_features.append(supplier_data)
+    for idx, company in candidates.iterrows():
+        company_features = calculate_company_features(company, df)
+        for key, value in company_features.items():
+            candidates.at[idx, key] = value
     
-    calculated_df = pd.DataFrame(calculated_features)
+    required_features = [
+        'Процент побед',
+        'Процент побед по региону',
+        'Среднее кол-во конкурентов у заказчика',
+        'Кол-во конкурентов в тендере',
+        'Уровень',
+        'Допущен'
+    ]
     
-    unique_suppliers = unique_suppliers.reset_index(drop=True)
-    feature_cols = [col for col in calculated_df.columns if col not in ['idx', 'ИНН поставщика', 'Поставщик']]
-    unique_suppliers = pd.merge(
-        unique_suppliers, 
-        calculated_df[['ИНН поставщика'] + feature_cols], 
-        on='ИНН поставщика', 
-        how='left'
-    )
-    
-    print(f"\nРазмер DataFrame после объединения: {unique_suppliers.shape}")
-    print(f"Столбцы после объединения: {list(unique_suppliers.columns)[:10]}...")
+    for feature in required_features:
+        if feature not in candidates.columns:
+            if feature == 'Уровень':
+                candidates[feature] = tender_data.get('Уровень', 1)
+            elif feature == 'Допущен':
+                candidates[feature] = None
+            else:
+                candidates[feature] = None
     
     iterative_columns = [
         'Процент побед',
@@ -322,21 +306,12 @@ def get_recommendations(tender_data, df, model, top_n=20):
         'Допущен'
     ]
     
-    for col in unique_suppliers.columns:
-        if col in iterative_columns + group_median_columns or pd.api.types.is_numeric_dtype(unique_suppliers[col]):
-            unique_suppliers[col] = pd.to_numeric(unique_suppliers[col], errors='coerce')
+    for col in candidates.columns:
+        if col in iterative_columns + group_median_columns or pd.api.types.is_numeric_dtype(candidates[col]):
+            candidates[col] = pd.to_numeric(candidates[col], errors='coerce')
     
-    print("\nСтатистика по столбцам перед заполнением:")
-    all_numeric_columns = iterative_columns + group_median_columns
-    available_columns = [col for col in all_numeric_columns if col in unique_suppliers.columns]
-    
-    for col in available_columns:
-        not_null_count = unique_suppliers[col].notna().sum()
-        null_percentage = (len(unique_suppliers) - not_null_count) / len(unique_suppliers) * 100
-        print(f"  '{col}': {not_null_count} непустых значений ({null_percentage:.1f}% пропусков)")
-
-    available_iterative_columns = [col for col in iterative_columns if col in unique_suppliers.columns]
-    available_iterative_columns_with_nans = [col for col in available_iterative_columns if unique_suppliers[col].isna().any()]
+    available_iterative_columns = [col for col in iterative_columns if col in candidates.columns]
+    available_iterative_columns_with_nans = [col for col in available_iterative_columns if candidates[col].isna().any()]
     
     if available_iterative_columns_with_nans:
         print(f"\nПрименяем IterativeImputer для заполнения: {available_iterative_columns_with_nans}")
@@ -348,213 +323,82 @@ def get_recommendations(tender_data, df, model, top_n=20):
             random_state=42
         )
         
-        imp_df = unique_suppliers[available_iterative_columns].copy()
+        imp_df = candidates[available_iterative_columns].copy()
         
         imputed_values = iterative_imputer.fit_transform(imp_df)
             
         for i, col in enumerate(available_iterative_columns):
-            print(f"Заполнено {unique_suppliers[col].isna().sum()} пропусков в '{col}' с помощью IterativeImputer")
-            unique_suppliers[col] = imputed_values[:, i]
-
-    available_group_median_columns = [col for col in group_median_columns if col in unique_suppliers.columns]
+            candidates[col] = imputed_values[:, i]
     
-    if 'Сфера деятельности' in unique_suppliers.columns:
-        spheres_count = unique_suppliers['Сфера деятельности'].value_counts()
-        print(f"Топ-5 сфер деятельности среди поставщиков:")
-        for sphere, count in spheres_count.head(5).items():
-            print(f"  {sphere}: {count} поставщиков")
-    
-    if 'Регион поставки' in unique_suppliers.columns:
-        regions_count = unique_suppliers['Регион поставки'].value_counts()
-        print(f"Топ-5 регионов среди поставщиков:")
-        for region, count in regions_count.head(5).items():
-            print(f"  {region}: {count} поставщиков")
+    available_group_median_columns = [col for col in group_median_columns if col in candidates.columns]
     
     for col in available_group_median_columns:
-        if unique_suppliers[col].isna().any():
-            missing_count = unique_suppliers[col].isna().sum()
-            print(f"Заполняем {missing_count} пропусков в признаке '{col}' с помощью fill_median")
-            unique_suppliers[col] = fill_median(unique_suppliers, col)
-    
-    for col in unique_suppliers.columns:
-        if pd.api.types.is_numeric_dtype(unique_suppliers[col]) and unique_suppliers[col].isna().any():
-            missing_count = unique_suppliers[col].isna().sum()
-            print(f"Оставшиеся {missing_count} пропусков в колонке '{col}' заполняем нулями")
-            unique_suppliers[col] = unique_suppliers[col].fillna(0)
-    
-    predictions_df = pd.DataFrame()
-    
-    if isinstance(model, dict) and 'model' in model:
-        pipeline = model['model']
-        if 'features' in model:
-            feature_names = model['features']
-        else:
-            feature_names = None
-    elif hasattr(model, 'best_estimator_'):
-        pipeline = model.best_estimator_
-        feature_names = None
-    else:
-        pipeline = model
-        feature_names = None
-    
-    preprocessor = None
-    classifier = None
-    
-    if hasattr(pipeline, 'named_steps'):
-        if 'preprocessor' in pipeline.named_steps:
-            preprocessor = pipeline.named_steps['preprocessor']
-        if 'classifier' in pipeline.named_steps:
-            classifier = pipeline.named_steps['classifier']
-    elif hasattr(pipeline, 'steps'):
-        for name, step in pipeline.steps:
-            if name in ['preprocessor', 'preprocessing', 'transform']:
-                preprocessor = step
-            elif name in ['classifier', 'estimator', 'model']:
-                classifier = step
-    elif hasattr(pipeline, '_final_estimator'):
-        classifier = pipeline._final_estimator
-        if hasattr(pipeline, 'transformers_'):
-            preprocessor = pipeline.transformers_
-    
-    if classifier is None:
-        classifier = pipeline
+        if candidates[col].isna().any():
+            missing_count = candidates[col].isna().sum()
+            candidates[col] = fill_median(candidates, col)
 
-    if feature_names is None:
-        if hasattr(classifier, 'feature_name_'):
-            feature_names = classifier.feature_name_
-        elif hasattr(model, 'feature_names'):
-            feature_names = model['feature_names']
-        elif hasattr(pipeline, 'feature_names_in_'):
-            feature_names = pipeline.feature_names_in_
-        else:
-            feature_names = [f'f{i}' for i in range(classifier.n_features_in_)]
-
-    required_cols = []
-    if hasattr(pipeline, 'feature_names_in_'):
-        required_cols = list(pipeline.feature_names_in_)
-        print(f"Модель требует {len(required_cols)} колонок")
+    is_catboost = 'catboost' in str(type(classifier)).lower()
     
-    categorical_cols = []
-    numerical_cols = []
-    
-    categorical_transformer = None
-    
-    for name, transformer, cols in preprocessor.transformers_:
-        print(name, cols)
-        if name in ['categorical', 'time_features']:
-            categorical_cols = cols
-            categorical_transformer = transformer
-        elif name in ['count_features', 'percent_features']:
-            numerical_cols.extend(cols)
-    
-    X_pred = pd.DataFrame(index=range(len(predictions_df)))
-    
-    for col in required_cols:
-        if col in predictions_df.columns:
-            X_pred[col] = predictions_df[col]
-    
-    missing_cols = set(required_cols) - set(X_pred.columns)
-    if missing_cols:
-        print(f"Отсутствуют колонки: {missing_cols}")
-    
-    print("\nПодготавливаем категориальные данные...")
-    
-    allowed_categories = {}
-    if categorical_transformer and hasattr(categorical_transformer, 'named_steps'):
-        if 'onehotencoder' in categorical_transformer.named_steps:
-            categorical_encoder = categorical_transformer.named_steps['onehotencoder']
-            
-            if hasattr(categorical_encoder, 'categories_'):
-                for i, col in enumerate(categorical_cols):
-                    if i < len(categorical_encoder.categories_):
-                        allowed_categories[col] = list(categorical_encoder.categories_[i])
-    
-    for col in numerical_cols:
-        if col in X_pred.columns:
+    if is_catboost or hasattr(classifier, 'feature_names_in_'):
+        X_pred = candidates[required_features].copy()
+        
+        for col in X_pred.columns:
             X_pred[col] = pd.to_numeric(X_pred[col], errors='coerce')
-    
-    for col in categorical_cols:
-        if col in X_pred.columns:
-            X_pred[col] = X_pred[col].fillna('Other').astype(str)
-            
-            if col in allowed_categories:
-                valid_categories = allowed_categories[col]
-                invalid_mask = ~X_pred[col].isin(valid_categories)
-                if invalid_mask.any():
-                    default_category = 'Other'
-                    print(f"  Колонка '{col}': заменяем {invalid_mask.sum()} недопустимых значений на '{default_category}'")
-                    X_pred.loc[invalid_mask, col] = default_category
-    
-    if hasattr(preprocessor, 'transformers_'):
-        for name, transformer, cols in preprocessor.transformers_:
-            if hasattr(transformer, 'steps'):
-                for step_name, step_obj in transformer.steps:
-                    if 'imputer' in step_name.lower():
-                        imputer_columns = cols
-                        print(f"\nIterativeImputer в препроцессоре применяется к колонкам: {imputer_columns}")
-                        
-                        missing_counts = {col: X_pred[col].isna().sum() for col in imputer_columns if col in X_pred.columns}
-                        for col, count in missing_counts.items():
-                            if count > 0:
-                                print(f"Колонка '{col}' содержит {count} пропусков, которые будут заполнены IterativeImputer")
-                        break
-    
-    X_original = preprocessor.transform(X_pred)
+        
+        if hasattr(classifier, 'predict_proba'):
+            probabilities = classifier.predict_proba(X_pred)[:, 1]
+        else:
+            probabilities = classifier.predict(X_pred)
+    else:
+        X_pred = candidates.copy()
+        
+        numerical_cols = []
+        
+        if hasattr(preprocessor, 'transformers_'):
+            for name, transformer, cols in preprocessor.transformers_:
+                numerical_cols.extend(cols)
+        
+        X_transformed = preprocessor.transform(X_pred)
+        
+        if hasattr(classifier, 'predict_proba'):
+            probabilities = classifier.predict_proba(X_transformed)[:, 1]
+        else:
+            probabilities = classifier.predict(X_transformed)
 
-    if X_original.shape[1] == classifier.n_features_in_:
-        X_transformed = X_original
-
-    X_transformed_df = pd.DataFrame(X_transformed, columns=feature_names)
     
-    print("\nПрименяем классификатор для получения предсказаний...")
-    probabilities = classifier.predict_proba(X_transformed_df)[:, 1]
-    
-    print(f"\nСтатистика по вероятностям модели:")
-    print(f"Минимальная вероятность: {np.min(probabilities):.4f}")
-    print(f"Максимальная вероятность: {np.max(probabilities):.4f}")
-    print(f"Средняя вероятность: {np.mean(probabilities):.4f}")
-    print(f"Медианная вероятность: {np.median(probabilities):.4f}")
-    print(f"Стандартное отклонение: {np.std(probabilities):.4f}")
-    
-    results = unique_suppliers.copy()
+    results = candidates.copy()
     results['probability'] = probabilities
     
-    win_rate_values = pd.to_numeric(results['Процент побед'], errors='coerce')
-    if not win_rate_values.isna().all() and len(win_rate_values.unique()) > 1:
-        correlation = np.corrcoef(
-            win_rate_values.fillna(0),
-            results['probability']
-        )[0,1]
-        print(f"\nКорреляция между историческим процентом побед и предсказаниями модели: {correlation:.4f}")
-
     results = results.sort_values('probability', ascending=False).head(top_n)
     
     recommendations = []
     print(f"\nТоп-{top_n} результаты:")  
+    
     for i, (_, row) in enumerate(results.iterrows(), 1):
-        print(f"{i}. {row['Поставщик']} - {row['probability']:.4f}")
-        recommendations.append({
-            'name': str(row['Поставщик']),
+        supplier_name = row.get('Поставщик', f"ИНН: {row['ИНН поставщика']}")
+        supplier_inn = row['ИНН поставщика']
+        print(f"{i}. {supplier_name} (ИНН: {supplier_inn}) - {row['probability']:.4f}; адрес: {row['Адрес']}")
+        
+        recommendation = {
             'inn': str(row['ИНН поставщика']),
             'probability': round(float(row['probability']) * 100, 4),
-            'region': str(row['Регион поставки']),
-            'sector': str(row['Сфера деятельности']),
-            'win_rate': round(float(row['Процент побед']) * 100, 4),
-        })
-
-    rec_regions = [r['region'] for r in recommendations]
-    rec_sectors = [r['sector'] for r in recommendations]
-    
-    print("\nРаспределение по регионам в рекомендациях:")
-    for region, count in pd.Series(rec_regions).value_counts().items():
-        print(f"  {region}: {count} поставщиков")
+        }
         
-    print("\nРаспределение по секторам в рекомендациях:")
-    for sector, count in pd.Series(rec_sectors).value_counts().items():
-        print(f"  {sector}: {count} поставщиков")
+        if 'Поставщик' in row:
+            recommendation['name'] = str(row['Поставщик'])
+        if 'Регион поставки' in row:
+            recommendation['region'] = str(row['Регион поставки'])
+        if 'Сфера деятельности' in row:
+            recommendation['sector'] = str(row['Сфера деятельности'])
+        if 'Процент побед' in row:
+            recommendation['win_rate'] = round(float(row['Процент побед']) * 100, 4)
+        if 'Адрес' in row and not pd.isna(row['Адрес']):
+            recommendation['address'] = str(row['Адрес'])
+        
+        recommendations.append(recommendation)
+    
     
     return recommendations
-
 
 
 def evaluate_recommendations(df, model, num_tenders=100, k_values=[1, 3, 5, 10, 20], random_seed=42, min_suppliers=1):
